@@ -1,0 +1,56 @@
+name: Publish
+
+# Bump the version in package.json in a PR first.
+on:
+    workflow_dispatch:
+
+jobs:
+    publish:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            id-token: write
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+            - name: Setup
+              uses: ./.github/actions/setup
+
+            - name: Run unit tests
+              run: bun test
+
+            - name: Build library
+              run: bun run build
+
+            - name: Install rclone
+              run: sudo apt-get update && sudo apt-get install -y rclone
+
+            # Upload before publishing to npm, so every ID in the new catalog
+            # already resolves at api.jellify.app/v1/autoeq/profiles/.
+            # `copy` only adds and updates files, never deletes them, so IDs
+            # from older versions of this package keep resolving too.
+            - name: Upload profiles to R2
+              run: >
+                  rclone copy profiles r2:jellify-autoeq/profiles
+                  --checksum --transfers 32
+                  --header-upload "Content-Type: application/json"
+              env:
+                  RCLONE_CONFIG_R2_TYPE: s3
+                  RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+                  RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+                  RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+                  RCLONE_CONFIG_R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+                  RCLONE_CONFIG_R2_NO_CHECK_BUCKET: 'true'
+
+            - name: Setup Node.js for npm publish
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 'lts/*'
+                  registry-url: 'https://registry.npmjs.org/'
+
+            - name: Publish to npm
+              run: npm publish --access public --provenance
+              env:
+                  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

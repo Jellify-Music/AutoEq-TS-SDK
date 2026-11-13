@@ -1,0 +1,150 @@
+/**
+ * Generates the catalog (`src/data/catalog.ts`) and profile files
+ * (`profiles/**.json`) from AutoEq's results.
+ *
+ * Usage:
+ *   bun scripts/generate.ts                  # clones AutoEq into a temporary directory
+ *   bun scripts/generate.ts --autoeq <path>  # uses an existing AutoEq checkout
+ */
+import { $ } from 'bun'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { parseArgs } from 'node:util'
+import { parseRigDirectory, profileId } from '../src/catalog.js'
+import { FIXED_BAND_FREQUENCIES } from '../src/constants.js'
+import { parseAutoEqText, toProfileJson } from '../src/parse.js'
+
+const AUTOEQ_REPOSITORY = 'https://github.com/jaakkopasanen/AutoEq.git'
+
+/** The only AutoEq files this script reads, out of several GB of results */
+const SPARSE_CHECKOUT_PATTERNS = [
+	'/results/*.md',
+	'/results/**/*ParametricEQ.txt',
+	'/results/**/*FixedBandEQ.txt',
+]
+
+const ROOT = join(import.meta.dir, '..')
+const PROFILES_DIRECTORY = join(ROOT, 'profiles')
+const CATALOG_FILE = join(ROOT, 'src', 'data', 'catalog.ts')
+
+/** Matches a list item in AutoEq's `results/INDEX.md` and `results/README.md` */
+const LINK_PATTERN = /^- \[(.+)\]\(\.\/(.+)\)/
+
+interface IndexedProfile {
+	name: string
+	source: string
+	rigDirectory: string
+	recommended: boolean
+}
+
+const { values } = parseArgs({ options: { autoeq: { type: 'string' } } })
+
+const autoEqDirectory = values.autoeq ?? (await cloneAutoEq())
+const resultsDirectory = join(autoEqDirectory, 'results')
+
+const recommended = new Set(
+	parseIndex(await readFile(join(resultsDirectory, 'README.md'), 'utf8')).map(({ path }) => path),
+)
+const indexed: IndexedProfile[] = parseIndex(
+	await readFile(join(resultsDirectory, 'INDEX.md'), 'utf8'),
+).map(({ name, path }) => {
+	const [source, rigDirectory, directoryName, ...rest] = path.split('/')
+	if (!source || !rigDirectory || directoryName !== name || rest.length > 0) {
+		throw new Error(`Unexpected result path: ${path}`)
+	}
+	parseRigDirectory(rigDirectory)
+	return { name, source, rigDirectory, recommended: recommended.has(path) }
+})
+
+const ids = new Map<string, IndexedProfile>()
+for (const profile of indexed) {
+	const id = profileId(profile.source, profile.rigDirectory, profile.name)
+	const existing = ids.get(id)
+	if (existing) {
+		throw new Error(`Profile ID collision: ${id} (${existing.name} and ${profile.name})`)
+	}
+	ids.set(id, profile)
+}
+
+await rm(PROFILES_DIRECTORY, { recursive: true, force: true })
+
+for (const [id, { name, source, rigDirectory }] of ids) {
+	const directory = join(resultsDirectory, source, rigDirectory, name)
+	const parametric = parseAutoEqText(
+		await readFile(join(directory, `${name} ParametricEQ.txt`), 'utf8'),
+	)
+	const fixedBand = parseAutoEqText(
+		await readFile(join(directory, `${name} FixedBandEQ.txt`), 'utf8'),
+	)
+
+	const frequencies = fixedBand.filters.map((filter) => filter.frequency)
+	if (frequencies.join() !== FIXED_BAND_FREQUENCIES.join()) {
+		throw new Error(`Unexpected fixed-band frequencies for ${id}: ${frequencies.join(', ')}`)
+	}
+
+	const file = join(PROFILES_DIRECTORY, `${id}.json`)
+	await mkdir(dirname(file), { recursive: true })
+	await writeFile(file, JSON.stringify(toProfileJson({ parametric, fixedBand })))
+}
+
+const commit = (await $`git -C ${autoEqDirectory} rev-parse HEAD`.text()).trim()
+const date = (await $`git -C ${autoEqDirectory} log -1 --format=%cs`.text()).trim()
+
+await writeFile(CATALOG_FILE, renderCatalog(indexed, commit, date))
+
+if (!values.autoeq) await rm(autoEqDirectory, { recursive: true, force: true })
+
+console.log(
+	`Generated ${ids.size} profiles for ${new Set(indexed.map(({ name }) => name)).size} headphones from AutoEq ${commit.slice(0, 7)}`,
+)
+
+/**
+ * Shallow, sparse clone of the AutoEq files this script reads.
+ */
+async function cloneAutoEq(): Promise<string> {
+	const directory = await mkdtemp(join(tmpdir(), 'autoeq-'))
+
+	await $`git clone --depth 1 --filter=blob:none --no-checkout ${AUTOEQ_REPOSITORY} ${directory}`.quiet()
+	await $`git -C ${directory} sparse-checkout set --no-cone ${SPARSE_CHECKOUT_PATTERNS}`.quiet()
+	await $`git -C ${directory} checkout`.quiet()
+
+	return directory
+}
+
+function parseIndex(markdown: string): { name: string; path: string }[] {
+	return markdown.split('\n').flatMap((line) => {
+		const match = LINK_PATTERN.exec(line)
+		return match ? [{ name: match[1]!, path: decodeURIComponent(match[2]!) }] : []
+	})
+}
+
+function renderCatalog(profiles: IndexedProfile[], commit: string, date: string): string {
+	const sources = [...new Set(profiles.map(({ source }) => source))].sort()
+	const rigs = [...new Set(profiles.map(({ rigDirectory }) => rigDirectory))].sort()
+
+	const entries = profiles.map(
+		({ name, source, rigDirectory, recommended }) =>
+			`\t[${JSON.stringify(name)}, ${sources.indexOf(source)}, ${rigs.indexOf(rigDirectory)}, ${recommended ? 1 : 0}],`,
+	)
+
+	return `// Generated by scripts/generate.ts from AutoEq's results. Don't edit by hand.
+
+/** The AutoEq commit the catalog was generated from */
+export const AUTOEQ_COMMIT = '${commit}'
+
+/** The date of {@link AUTOEQ_COMMIT} */
+export const AUTOEQ_DATE = '${date}'
+
+/** Who measured the headphones */
+export const SOURCES: readonly string[] = ${JSON.stringify(sources)}
+
+/** AutoEq's rig directories, each a rig and a form factor */
+export const RIGS: readonly string[] = ${JSON.stringify(rigs)}
+
+/** \`[name, source index, rig index, recommended]\` for every profile */
+export const ENTRIES: readonly (readonly [string, number, number, 0 | 1])[] = [
+${entries.join('\n')}
+]
+`
+}

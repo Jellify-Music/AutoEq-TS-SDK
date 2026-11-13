@@ -1,0 +1,59 @@
+{
+	"name": "@jellify-music/autoeq-ts-sdk",
+	"version": "0.1.0",
+	"description": "AutoEq headphone correction profiles and tools for TypeScript: search, Bluetooth name matching, and fitting profiles to any graphic EQ",
+	"keywords": [
+		"autoeq",
+		"equalizer",
+		"eq",
+		"headphones",
+		"audio"
+	],
+	"license": "MIT",
+	"author": "Violet Caulfield <violet@cosmonautical.cloud> (https://github.com/anultravioletaurora)",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Jellify-Music/AutoEq-TS-SDK.git"
+	},
+	"bugs": {
+		"url": "https://github.com/Jellify-Music/AutoEq-TS-SDK/issues"
+	},
+	"homepage": "https://github.com/Jellify-Music/AutoEq-TS-SDK#readme",
+	"type": "module",
+	"main": "./lib/index.js",
+	"types": "./lib/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./lib/index.d.ts",
+			"default": "./lib/index.js"
+		},
+		"./profiles/*": "./profiles/*",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"lib",
+		"profiles",
+		"LICENSE",
+		"LICENSE-AutoEq"
+	],
+	"sideEffects": false,
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"generate": "bun scripts/generate.ts",
+		"typecheck": "tsc --noEmit",
+		"test": "bun test",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"prepublishOnly": "bun run build"
+	},
+	"devDependencies": {
+		"@types/bun": "1.4.4",
+		"prettier": "3.9.10",
+		"typescript": "6.0.3"
+	},
+	"publishConfig": {
+		"registry": "https://registry.npmjs.org/",
+		"access": "public"
+	},
+	"packageManager": "bun@1.4.2"
+}

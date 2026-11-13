@@ -1,0 +1,6 @@
+lib/
+node_modules/
+bun.lock
+coverage/
+profiles/
+src/data/
